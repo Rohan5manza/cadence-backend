@@ -106,6 +106,18 @@ index_ready:    bool          = False
 
 query_model = None
 
+class ProfileIn(BaseModel):
+    topics:           list[str]
+    difficulty:       str
+    display_name:     str        = ""
+    role:             str        = "curious"
+    institution:      str        = ""
+    primary_field:    str        = ""
+    reading_goal:     str        = "broad"
+    experience_level: str        = "intermediate"
+    weekly_goal:      int        = 5
+ 
+
 # Load model in background thread (add to lifespan)
 def _load_query_model():
     global query_model
@@ -425,35 +437,63 @@ async def search_papers(q: str = Query(...), limit: int = Query(30)):
 
 # ── User Profile & Preferences ────────────────────────────────────────────────
 
-@app.get("/user/preferences")
-async def get_preferences(
-    uid: str = Depends(current_user),
-    conn: asyncpg.Connection = Depends(get_db)
+@app.get("/user/profile")
+async def get_profile(
+    uid:  str = Depends(current_user),
+    conn: asyncpg.Connection = Depends(get_db),
 ):
     row = await conn.fetchrow(
-        "SELECT topics, difficulty FROM users WHERE id = $1", uid
+        """SELECT topics, difficulty, display_name, role, institution,
+                  primary_field, reading_goal, experience_level, weekly_goal
+           FROM users WHERE id = $1""",
+        uid
     )
     if not row:
-        return {"topics": [], "difficulty": "any"}
-    
-    # Handle potentially null DB columns gracefully
+        return {
+            "topics": [], "difficulty": "any", "display_name": "",
+            "role": "curious", "institution": "", "primary_field": "",
+            "reading_goal": "broad", "experience_level": "intermediate",
+            "weekly_goal": 5,
+        }
     return {
-        "topics": row["topics"] or [],
-        "difficulty": row["difficulty"] or "any"
+        "topics":           row["topics"]           or [],
+        "difficulty":       row["difficulty"]       or "any",
+        "display_name":     row["display_name"]     or "",
+        "role":             row["role"]             or "curious",
+        "institution":      row["institution"]      or "",
+        "primary_field":    row["primary_field"]    or "",
+        "reading_goal":     row["reading_goal"]     or "broad",
+        "experience_level": row["experience_level"] or "intermediate",
+        "weekly_goal":      row["weekly_goal"]      or 5,
     }
-
-@app.put("/user/preferences")
-async def update_preferences(
-    req: PreferencesIn,
-    uid: str = Depends(current_user),
-    conn: asyncpg.Connection = Depends(get_db)
+ 
+ 
+@app.put("/user/profile")
+async def update_profile(
+    req:  ProfileIn,
+    uid:  str = Depends(current_user),
+    conn: asyncpg.Connection = Depends(get_db),
 ):
-    # Update the users table with the new array of topics and difficulty string
     await conn.execute(
-        "UPDATE users SET topics = $1, difficulty = $2 WHERE id = $3",
-        req.topics, req.difficulty, uid
+        """UPDATE users SET
+            topics           = $1,
+            difficulty       = $2,
+            display_name     = $3,
+            role             = $4,
+            institution      = $5,
+            primary_field    = $6,
+            reading_goal     = $7,
+            experience_level = $8,
+            weekly_goal      = $9
+           WHERE id = $10""",
+        req.topics, req.difficulty, req.display_name,
+        req.role, req.institution, req.primary_field,
+        req.reading_goal, req.experience_level, req.weekly_goal,
+        uid,
     )
     return {"status": "updated"}
+ 
+ 
 # Feed
 @app.get("/feed/discover")
 async def discover(
@@ -461,37 +501,71 @@ async def discover(
     uid:   str = Depends(current_user),
     conn:  asyncpg.Connection = Depends(get_db),
 ):
-    # 1. Fetch user preferences from DB
-    user_row      = await conn.fetchrow("SELECT topics, difficulty FROM users WHERE id = $1", uid)
-    active_topics = user_row["topics"]     if user_row and user_row["topics"]     else []
-    active_diff   = user_row["difficulty"] if user_row and user_row["difficulty"] else "any"
+    # 1. Fetch full user profile from DB
+    user_row = await conn.fetchrow(
+        """SELECT topics, difficulty, role, primary_field,
+                  reading_goal, experience_level
+           FROM users WHERE id = $1""",
+        uid
+    )
 
-    # Flatten topic IDs → arxiv category keywords
+    active_topics    = (user_row["topics"]           or []) if user_row else []
+    active_diff      = (user_row["difficulty"]       or "any") if user_row else "any"
+    role             = (user_row["role"]             or "curious") if user_row else "curious"
+    primary_field    = (user_row["primary_field"]    or "") if user_row else ""
+    reading_goal     = (user_row["reading_goal"]     or "broad") if user_row else "broad"
+    experience_level = (user_row["experience_level"] or "intermediate") if user_row else "intermediate"
+
+    # 2. Build category keywords
+    # Primary field gets 3x weight by repeating its keywords
     cat_keywords = []
+    if primary_field:
+        primary_cats = TOPIC_CATEGORY_MAP.get(primary_field, [primary_field])
+        cat_keywords.extend(primary_cats * 3)
     for t in active_topics:
         cat_keywords.extend(TOPIC_CATEGORY_MAP.get(t, [t]))
+    # Deduplicate while preserving order (primary field still appears 3x before dedup at match time)
     cat_keywords = [kw.lower() for kw in cat_keywords]
 
+    # 3. Paper matching function — uses role + experience + reading_goal
     def paper_matches_prefs(p_dict) -> bool:
         venue    = (p_dict.get('venue')    or '').lower()
         p_cats   = ' '.join(safe_array(p_dict.get('categories', []))).lower()
         abstract = (p_dict.get('abstract') or '').lower()
+        year     = p_dict.get('year') or 0
 
+        # Topic filter — must match at least one keyword
         if cat_keywords:
             if not any(kw in p_cats or kw in venue for kw in cat_keywords):
                 return False
 
-        if active_diff == 'accessible':
+        # Reading goal: stay_current → exclude papers older than 3 years (with 30% pass-through)
+        if reading_goal == 'stay_current' and year and year < 2022:
+            if random.random() < 0.70:
+                return False
+
+        # Role + reading goal: active researchers staying current want very recent
+        if role == 'researcher' and reading_goal == 'stay_current':
+            if year and year < 2020:
+                return False
+
+        # Experience level overrides difficulty for beginners
+        effective_diff = active_diff
+        if effective_diff == 'any' and experience_level == 'beginner':
+            effective_diff = 'accessible'
+
+        # Difficulty filter
+        if effective_diff == 'accessible':
             heavy = ['math.ag', 'math.nt', 'hep-th', 'gr-qc']
             if any(kw in p_cats for kw in heavy):
                 return False
-        elif active_diff == 'expert':
+        elif effective_diff == 'expert':
             if not p_cats or not abstract:
                 return False
 
         return True
 
-    # 2. Get taste vector + seen papers
+    # 4. Get taste vector + seen papers
     taste   = await _taste_vector(uid, conn) if index_ready else None
     seen    = {str(r["paper_id"]) for r in await conn.fetch(
         "SELECT paper_id FROM interactions WHERE user_id = $1", uid
@@ -499,7 +573,7 @@ async def discover(
     all_ids = list(paper_meta.keys())
     papers  = []
 
-    # 3. Vector search (primary path — only runs if user has interactions)
+    # 5. Vector search (primary path — only when user has interactions)
     if taste is not None and paper_index is not None:
         matches = paper_index.search(taste, limit * 15)
         for m in matches:
@@ -512,14 +586,11 @@ async def discover(
             if len(papers) >= limit:
                 break
 
-    # 4. Fallback — runs when taste vector is empty OR vector search didn't fill limit
-# 4. Fallback
+    # 6. Fallback — when no taste vector OR vector search didn't fill limit
     if len(papers) < limit:
         if cat_keywords:
-        # Sample 50k random papers instead of iterating all 2.28M
-            sample_size = min(50000, len(all_ids))
-            sample = random.sample(all_ids, sample_size)
-            candidates = []
+            sample      = random.sample(all_ids, min(50000, len(all_ids)))
+            candidates  = []
             for pid in sample:
                 if pid in seen:
                     continue
@@ -538,7 +609,7 @@ async def discover(
                 if pid not in existing_ids:
                     papers.append(_paper_dict(pid))
         else:
-            sample = random.sample(all_ids, min(50000, len(all_ids)))
+            sample     = random.sample(all_ids, min(50000, len(all_ids)))
             candidates = [
                 (paper_meta[pid].get('citation_count') or 0, pid)
                 for pid in sample if pid not in seen
@@ -546,16 +617,21 @@ async def discover(
             candidates.sort(reverse=True)
             papers = [_paper_dict(pid) for _, pid in candidates[:limit]]
 
-    # 5. Diversity injection — add 10% exploration outside taste results
-# 5. Diversity injection
+    # 7. Re-sort based on reading_goal (applied after vector search)
+    if reading_goal == 'stay_current' and papers:
+        papers.sort(key=lambda p: p.get('year') or 0, reverse=True)
+    elif reading_goal == 'deep_dive' and papers:
+        papers.sort(key=lambda p: p.get('citation_count') or 0, reverse=True)
+    # broad and specific: leave in taste-model order
+
+    # 8. Diversity injection — 10% exploration outside taste results
     if taste is not None:
-        explore_count = max(2, limit // 10)
-        taste_ids     = {p['id'] for p in papers}
-        # Sample instead of iterating all 2.28M
+        explore_count  = max(2, limit // 10)
+        taste_ids      = {p['id'] for p in papers}
         explore_sample = random.sample(all_ids, min(10000, len(all_ids)))
         explore_pool   = [pid for pid in explore_sample if pid not in seen and pid not in taste_ids]
         random.shuffle(explore_pool)
-        explore_added = 0
+        explore_added  = 0
         for pid in explore_pool:
             if explore_added >= explore_count:
                 break
@@ -564,14 +640,18 @@ async def discover(
                 papers.append(_paper_dict(pid))
                 explore_added += 1
 
-    # 6. Safety net — should never trigger but just in case
+    # 9. Safety net
     if len(papers) < 3:
         fallback = random.sample(list(paper_meta.keys()), min(limit, len(paper_meta)))
         papers   = [_paper_dict(pid) for pid in fallback]
 
-    random.shuffle(papers)
-    return papers[:limit]
+    # 10. Final shuffle (preserves rough ordering but adds variety)
+    # For stay_current/deep_dive we already sorted — don't re-shuffle
+    if reading_goal not in ('stay_current', 'deep_dive'):
+        random.shuffle(papers)
 
+    return papers[:limit]
+    
 @app.get("/feed/daily")
 async def daily_ten(
     uid:  str = Depends(current_user),

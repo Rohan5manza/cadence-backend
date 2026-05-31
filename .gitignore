@@ -18,3 +18,12 @@ papers_openalex.jsonl
 papers_s2orc.jsonl
 *.log
 nohup.out
+papers_pubmed.jsonl
+papers_biorxiv.jsonl
+papers_doaj.jsonl
+papers_preprints.jsonl
+pubmed_raw/
+checkpoints/
+embeddings_backup.npy
+cadence_backup.usearch
+paper_ids_backup.json
