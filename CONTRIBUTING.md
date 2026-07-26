@@ -20,7 +20,8 @@ Thank you for your interest in contributing to Cadence. This document explains h
 ### Low priority / good first issues
 - Fix the `by-author` endpoint — authors field is currently empty in the corpus; needs to be populated during ingestion
 - Add paper summary endpoint using Claude API
-- Add dark/light mode toggle to the web PWA
+- Improve the frontend PWA design massively so that it looks better and more professional instead of looking like a stretched-out version of a mobile app.
+- Add dark/light mode toggle to the web PWA.
 - Improve search ranking (currently basic BM25 + semantic hybrid)
 - Add more language support for paper metadata
 
