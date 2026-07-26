@@ -3,7 +3,7 @@
 Thank you for your interest in contributing to Cadence. This document explains how to get started.
 
 ---
-
+ 
 ## Areas Where Help Is Most Needed
 
 ### High priority
