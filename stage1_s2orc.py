@@ -11,7 +11,7 @@ import wget
 from tqdm import tqdm
 
 # ── Config ────────────────────────────────────────────────────────────────────
-API_KEY    = "Ed4VXsSEcSaWFxMyS7SxJ9CkX1dUgFmP6OQ3VfO1"
+API_KEY    = "REPLACE_YOUR_OWN_KEY"
 NUM_SHARDS = 8
 LOCAL_PATH = "./s2orc_shards"
 OUTPUT     = "papers_s2orc.jsonl"   # renamed for clarity in multi-source setup
