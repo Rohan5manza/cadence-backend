@@ -23,7 +23,7 @@ import httpx
  
 
 # ── Config ─────────────────────────────────────────────────────────────────────
-DB_URL       = "postgresql://postgres:sherlockholmes5manza@db.jqxevzhwtktiopmabdau.supabase.co:5432/postgres"
+DB_URL       = "postgresql://platform:sherlock@localhost:5432/cadence"
 SECRET_KEY   = "replace_with_long_random_string_in_production"
 ALGORITHM    = "HS256"
 TOKEN_EXPIRE = 30  # days
@@ -102,6 +102,7 @@ embeddings_arr: np.ndarray    = None
 paper_meta:     dict          = {}     # paper_id -> dict
 paper_id_list:  list          = []
 index_ready:    bool          = False
+transient_papers = {}
 # ──────────────────────────────────────────────────────────────────────────────
 
 query_model = None
@@ -178,7 +179,7 @@ async def lifespan(app: FastAPI):
 
     # 1. Database
     print("[startup] Connecting to database...")
-    db_pool = await asyncpg.create_pool(dsn=DB_URL, ssl="require", min_size=2, max_size=10)
+    db_pool = await asyncpg.create_pool(dsn=DB_URL, min_size=2, max_size=10)
     print("[startup] Database connected ✓")
 
     # 2. Paper metadata
@@ -498,7 +499,7 @@ async def update_profile(
 @app.get("/feed/discover")
 async def discover(
     limit: int = Query(20),
-    uid:   str = Depends(current_user),
+    uid:   str = Depends(current_user), sort: str = Query("relevance"),
     conn:  asyncpg.Connection = Depends(get_db),
 ):
     # 1. Fetch full user profile from DB
@@ -752,31 +753,291 @@ async def add_to_playlist(
     )
     return {"status": "added"}
 
+@app.get("/feed/hot")
+async def hot_papers(
+    category: str = Query("cs_ml"),
+    limit:    int = Query(20),
+    uid:      str = Depends(current_user),
+):
+    import httpx
+    import random
+ 
+    ML_CATEGORIES = {'cs_ai', 'cs_ml', 'cs_nlp', 'cs_cv', 'cs_ro'}
+    papers = []
+ 
+    if category in ML_CATEGORIES:
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                r = await client.get(
+                    "https://huggingface.co/api/daily_papers",
+                    params={"limit": limit * 2},
+                    headers={"User-Agent": "Cadence Research App"}
+                )
+                if r.status_code == 200:
+                    data = r.json()
+                    for item in data:
+                        paper = item.get("paper", {})
+                        title    = paper.get("title", "").strip()
+                        abstract = paper.get("summary", "").strip()
+                        if not title or not abstract:
+                            continue
+                        arxiv_id = paper.get("id", "")
+                        
+                        found_pid = None
+                        if arxiv_id:
+                            norm = arxiv_id.replace('/', '_')
+                            for prefix in ['arxiv_', '']:
+                                pid = f"{prefix}{norm}"
+                                if pid in paper_meta:
+                                    found_pid = pid
+                                    break
+                        
+                        if found_pid:
+                            p = _paper_dict(found_pid)
+                        else:
+                            p = {
+                                "id":              f"hf_{arxiv_id.replace('/', '_')}",
+                                "title":           title,
+                                "abstract":        abstract,
+                                "authors":         [a.get("name","") for a in paper.get("authors",[])],
+                                "year":            2026,
+                                "venue":           "arXiv",
+                                "doi":             None,
+                                "arxiv_id":        arxiv_id,
+                                "categories":      ["cs.LG"],
+                                "source":          "huggingface",
+                                "citation_count":  0,
+                                "open_access_url": f"https://arxiv.org/pdf/{arxiv_id}" if arxiv_id else None,
+                            }
+                        
+                        # ✅ CACHE IT: Store the constructed paper metadata in memory
+                        transient_papers[p["id"]] = p
+                        papers.append(p)
+                        if len(papers) >= limit:
+                            break
+        except Exception as e:
+            print(f"[hot] HuggingFace failed: {e}")
+ 
+    if len(papers) < limit:
+        try:
+            FIELD_MAP = {
+                'cs_ai': 'Computer Science', 'cs_ml': 'Computer Science',
+                'cs_nlp': 'Computer Science', 'cs_cv': 'Computer Science',
+                'bio_genomics': 'Biology', 'bio_neuro': 'Neuroscience',
+                'med_clinical': 'Medicine', 'phys_quantum': 'Physics',
+                'math_pure': 'Mathematics', 'econ_theory': 'Economics',
+                'psych_cog': 'Psychology',
+            }
+            field = FIELD_MAP.get(category, 'Computer Science')
+ 
+            async with httpx.AsyncClient(timeout=10) as client:
+                r = await client.get(
+                    "https://api.semanticscholar.org/graph/v1/paper/search",
+                    params={
+                        "query":            field + " research 2025 2026",
+                        "fields":           "title,abstract,authors,year,venue,citationCount,externalIds,openAccessPdf",
+                        "limit":            limit * 2,
+                        "sort":             "citationCount",
+                        "publicationDateOrYear": "2024-01-01:",
+                    },
+                    headers={"User-Agent": "Cadence Research App"}
+                )
+                if r.status_code == 200:
+                    data = r.json()
+                    existing_ids = {p['id'] for p in papers}
+                    for item in data.get("data", []):
+                        title    = item.get("title", "").strip()
+                        abstract = item.get("abstract", "").strip()
+                        if not title or len(abstract) < 50:
+                            continue
+                        arxiv_id = item.get("externalIds", {}).get("ArXiv", "")
+                        oa_pdf   = (item.get("openAccessPdf") or {}).get("url", "")
+                        pid      = f"s2_{item.get('paperId', '')}"
+                        if pid in existing_ids:
+                            continue
+                        
+                        p = {
+                            "id":              pid,
+                            "title":           title,
+                            "abstract":        abstract,
+                            "authors":         [a.get("name", "") for a in item.get("authors", [])][:10],
+                            "year":            item.get("year"),
+                            "venue":           item.get("venue", ""),
+                            "doi":             item.get("externalIds", {}).get("DOI"),
+                            "arxiv_id":        arxiv_id,
+                            "categories":      [],
+                            "source":          "semantic_scholar",
+                            "citation_count":  item.get("citationCount", 0),
+                            "open_access_url": oa_pdf or (f"https://arxiv.org/pdf/{arxiv_id}" if arxiv_id else None),
+                        }
+                        
+                        # ✅ CACHE IT: Store Semantic Scholar trending items too
+                        transient_papers[pid] = p
+                        papers.append(p)
+                        if len(papers) >= limit:
+                            break
+        except Exception as e:
+            print(f"[hot] Semantic Scholar failed: {e}")
+ 
+    # ── Internal fallback ─────────────────────────────────────────────────────
+    if len(papers) < limit // 2:
+        cat_kws = TOPIC_CATEGORY_MAP.get(category, [category])
+        sample  = random.sample(list(paper_meta.keys()), min(100_000, len(paper_meta)))
+        candidates = []
+        for pid in sample:
+            p = paper_meta.get(pid, {})
+            p_cats = ' '.join(safe_array(p.get('categories', []))).lower()
+            year   = p.get('year') or 0
+            if not any(kw.lower() in p_cats for kw in cat_kws):
+                continue
+            if year and year < 2020:
+                continue
+            score = (p.get('citation_count') or 0) + max(0, year - 2015) * 100
+            candidates.append((score, pid))
+        candidates.sort(reverse=True)
+        for _, pid in candidates[:limit]:
+            papers.append(_paper_dict(pid))
+ 
+    return papers[:limit]
+ 
+
+import xml.etree.ElementTree as ET
+import httpx
+from fastapi import HTTPException
+
+import xml.etree.ElementTree as ET
+
 @app.get("/papers/{paper_id}")
 async def get_paper(paper_id: str):
-    p = paper_meta.get(paper_id)
-    if not p:
-        raise HTTPException(404, "Paper not found")
-    return _paper_dict(paper_id)
+    # 1. Check local internal main database
+    if paper_id in paper_meta:
+        return _paper_dict(paper_id)
+    
+    # 2. ✅ Check Transient In-Memory Cache (Instant hit for fresh feed papers!)
+    if paper_id in transient_papers:
+        return transient_papers[paper_id]
+    
+    # 3. Fallback: If cache missed (e.g. server restarted), try live API proxy
+    if paper_id.startswith("s2_"):
+        s2_id = paper_id[3:]
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                r = await client.get(
+                    f"https://api.semanticscholar.org/graph/v1/paper/{s2_id}",
+                    params={"fields": "title,abstract,authors,year,venue,citationCount,externalIds,openAccessPdf"},
+                    headers={"User-Agent": "Cadence Research App"}
+                )
+                if r.status_code == 200:
+                    item = r.json()
+                    arxiv_id = item.get("externalIds", {}).get("ArXiv", "")
+                    return {
+                        "id":              paper_id,
+                        "title":           item.get("title", "").strip(),
+                        "abstract":        item.get("abstract", "").strip(),
+                        "authors":         [a.get("name", "") for a in item.get("authors", [])][:10],
+                        "year":            item.get("year"),
+                        "venue":           item.get("venue", ""),
+                        "doi":             item.get("externalIds", {}).get("DOI"),
+                        "arxiv_id":        arxiv_id,
+                        "categories":      [],
+                        "source":          "semantic_scholar",
+                        "citation_count":  item.get("citationCount", 0),
+                        "open_access_url": (item.get("openAccessPdf") or {}).get("url") or (f"https://arxiv.org/pdf/{arxiv_id}" if arxiv_id else None),
+                    }
+        except Exception:
+            pass
 
+    if paper_id.startswith("hf_"):
+        arxiv_id = paper_id[3:].replace('_', '/')
+        # Safe-fallback query to official raw arXiv XML engine if cache drops out
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                ax_res = await client.get(f"http://export.arxiv.org/api/query?id_list={arxiv_id}")
+                if ax_res.status_code == 200:
+                    root = ET.fromstring(ax_res.text)
+                    ns = {'atom': 'http://www.w3.org/2005/Atom'}
+                    entry = root.find('atom:entry', ns)
+                    if entry is not None:
+                        title = entry.find('atom:title', ns).text.replace('\n', ' ').strip()
+                        abstract = entry.find('atom:summary', ns).text.replace('\n', ' ').strip()
+                        authors = [a.find('atom:name', ns).text for a in entry.findall('atom:author', ns)]
+                        return {
+                            "id":              paper_id,
+                            "title":           title,
+                            "abstract":        abstract,
+                            "authors":         authors[:10],
+                            "year":            2026,
+                            "venue":           "arXiv",
+                            "doi":             None,
+                            "arxiv_id":        arxiv_id,
+                            "categories":      ["cs.LG"],
+                            "source":          "huggingface",
+                            "citation_count":  0,
+                            "open_access_url": f"https://arxiv.org/pdf/{arxiv_id}",
+                        }
+        except Exception:
+            pass
+
+    raise HTTPException(404, "Paper not found in local database, cache, or external networks")
+    
 # Add "more like this" endpoint
 @app.get("/papers/{paper_id}/similar")
 async def similar_papers(paper_id: str, limit: int = Query(20)):
+    # Feature Upgrade: If the user reads an external trending paper, fetch real external recommendations!
+    if paper_id.startswith("s2_") or paper_id.startswith("hf_"):
+        s2_lookup_id = paper_id[3:] if paper_id.startswith("s2_") else f"arXiv:{paper_id[3:].replace('_', '/')}"
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                r = await client.get(
+                    f"https://api.semanticscholar.org/graph/v1/paper/{s2_lookup_id}/recommendations",
+                    params={
+                        "fields": "title,abstract,authors,year,venue,citationCount,externalIds,openAccessPdf",
+                        "limit": limit
+                    },
+                    headers={"User-Agent": "Cadence Research App"}
+                )
+                if r.status_code == 200:
+                    data = r.json()
+                    results = []
+                    for item in data.get("recommendedPapers", []):
+                        title = item.get("title", "").strip()
+                        if not title:
+                            continue
+                        ax_id = item.get("externalIds", {}).get("ArXiv", "")
+                        results.append({
+                            "id":              f"s2_{item.get('paperId', '')}",
+                            "title":           title,
+                            "abstract":        item.get("abstract", "").strip(),
+                            "authors":         [a.get("name", "") for a in item.get("authors", [])][:10],
+                            "year":            item.get("year"),
+                            "venue":           item.get("venue", ""),
+                            "doi":             item.get("externalIds", {}).get("DOI"),
+                            "arxiv_id":        ax_id,
+                            "categories":      [],
+                            "source":          "semantic_scholar",
+                            "citation_count":  item.get("citationCount", 0),
+                            "open_access_url": (item.get("openAccessPdf") or {}).get("url") or (f"https://arxiv.org/pdf/{ax_id}" if ax_id else None),
+                        })
+                    return results
+        except Exception as e:
+            print(f"[similar] External lookup failed: {e}")
+        return []
+
+    # Standard Internal Vector/FAISS Search Index Logic
     if not index_ready or paper_index is None:
         raise HTTPException(503, "Index not ready")
     
-    # Get the paper's embedding
     try:
         idx = paper_id_list.index(paper_id)
     except ValueError:
         raise HTTPException(404, "Paper not in index")
     
     vec     = embeddings_arr[idx].astype(np.float32)
-    matches = paper_index.search(vec, limit + 1)  # +1 because paper itself is returned
+    matches = paper_index.search(vec, limit + 1)
     results = []
     for m in matches:
         pid = paper_id_list[int(m.key)]
-        if pid != paper_id:  # exclude the paper itself
+        if pid != paper_id:
             results.append(_paper_dict(pid))
         if len(results) >= limit:
             break
@@ -784,24 +1045,34 @@ async def similar_papers(paper_id: str, limit: int = Query(20)):
 
 @app.get("/papers/{paper_id}/unpaywall")
 async def get_free_pdf(paper_id: str):
-    """Use Unpaywall to find a legal free PDF for any paper with a DOI."""
-    p = paper_meta.get(paper_id)
-    if not p:
-        raise HTTPException(404, "Paper not found")
-    
-    doi = p.get("doi")
+    # Route modification to resolve external DOI variables dynamically
+    doi = None
+    if paper_id in paper_meta:
+        p = paper_meta.get(paper_id)
+        doi = p.get("doi")
+    elif paper_id.startswith("s2_") or paper_id.startswith("hf_"):
+        try:
+            # Re-use our dynamic routing logic to extract the transient paper's DOI
+            transient_paper = await get_paper(paper_id)
+            doi = transient_paper.get("doi")
+        except Exception:
+            pass
+
     if not doi:
-        return {"url": None, "source": None}
+        # Fallback if it's an arXiv/HF origin anyway (it's already fundamentally Open Access)
+        if paper_id.startswith("hf_"):
+            arxiv_id = paper_id[3:].replace('_', '/')
+            return {"url": f"https://arxiv.org/pdf/{arxiv_id}", "source": "arXiv", "is_oa": True}
+        return {"url": None, "source": None, "is_oa": False}
     
     try:
         async with httpx.AsyncClient(timeout=5) as client:
             r = await client.get(
                 f"https://api.unpaywall.org/v2/{doi}",
-                params={"email": "cadence@rohanmarar.com"}  # required by Unpaywall TOS
+                params={"email": "cadence@rohanmarar.com"}
             )
             if r.status_code == 200:
                 data = r.json()
-                # Check best open access location
                 best = data.get("best_oa_location")
                 if best:
                     url = best.get("url_for_pdf") or best.get("url")
@@ -810,8 +1081,6 @@ async def get_free_pdf(paper_id: str):
         return {"url": None, "source": None, "is_oa": False}
     except Exception:
         return {"url": None, "source": None, "is_oa": False}
-
-# Add these to your main.py file near the other playlist routes
 
 @app.get("/library/playlists/{playlist_id}")
 async def get_single_playlist(
@@ -1017,42 +1286,106 @@ async def get_todays_pick(
     uid:  str = Depends(current_user),
     conn: asyncpg.Connection = Depends(get_db),
 ):
-    """
-    One high-quality paper for today.
-    Uses taste vector to find relevant papers, then picks
-    highest cited one for quality signal. Deterministic for the day.
-    """
+    import datetime
+
+    today = datetime.date.today() 
+    day_seed = int(datetime.date.today().strftime("%Y%m%d"))
+
+    # 1. Check DB cache first — guarantees same paper all day
+    cached = await conn.fetchrow(
+        "SELECT paper_id FROM todays_pick_cache WHERE user_id=$1 AND date=$2",
+        uid, today
+    )
+    if cached and cached["paper_id"] in paper_meta:
+        return _paper_dict(cached["paper_id"])
+
+    all_ids = list(paper_meta.keys())
+    if not all_ids:
+        raise HTTPException(404, "No papers available.")
+
+    pick_pid = None
     taste = await _taste_vector(uid, conn) if index_ready else None
 
+    # 2. Path A — personalized + deterministic
     if taste is not None and paper_index is not None:
-        # Get top taste-model results
-        seen    = {str(r["paper_id"]) for r in await conn.fetch(
-            "SELECT paper_id FROM interactions WHERE user_id = $1", uid
-        )}
-        matches = paper_index.search(taste, 50)
+        matches    = paper_index.search(taste, 100)
         candidates = []
         for m in matches:
-            pid = paper_id_list[int(m.key)]
-            if pid in seen:
-                continue
-            p = paper_meta.get(pid, {})
+            pid            = paper_id_list[int(m.key)]
+            p              = paper_meta.get(pid, {})
             citation_count = p.get('citation_count') or 0
-            year = p.get('year') or 0
-            # Score: citations + recency bonus
-            score = citation_count + (max(0, year - 2015) * 100)
+            year           = p.get('year') or 0
+            score          = citation_count + (max(0, year - 2015) * 100)
             candidates.append((score, pid))
 
         if candidates:
-            candidates.sort(reverse=True)
-            # Pick from top 5 using date as seed for consistency within day
-            import datetime
-            day_seed = int(datetime.date.today().strftime("%Y%m%d"))
-            pick_idx = day_seed % min(5, len(candidates))
-            _, pick_pid = candidates[pick_idx]
-            return _paper_dict(pick_pid)
+            # Tiebreaker: sort by (score, pid) — stable across runs
+            candidates.sort(reverse=True, key=lambda x: (x[0], x[1]))
+            top_pool = candidates[:10]
+            pick_idx = day_seed % len(top_pool)
+            _, pick_pid = top_pool[pick_idx]
 
-    # Cold start — pick highest cited paper from corpus sample
-    sample = random.sample(list(paper_meta.keys()), min(1000, len(paper_meta)))
-    best   = max(sample, key=lambda pid: paper_meta[pid].get('citation_count') or 0)
-    return _paper_dict(best)
+    # 3. Path B — cold start deterministic
+    if not pick_pid:
+        rng    = random.Random(day_seed)
+        sample = rng.sample(all_ids, min(1000, len(all_ids)))
+        pick_pid = max(sample, key=lambda pid: paper_meta[pid].get('citation_count') or 0)
 
+    # 4. Cache in DB so it never changes today
+    await conn.execute(
+        """INSERT INTO todays_pick_cache (user_id, date, paper_id)
+           VALUES ($1, $2, $3) ON CONFLICT DO NOTHING""",
+        uid, today, pick_pid
+    )
+
+    return _paper_dict(pick_pid)
+
+
+@app.post("/admin/reload")
+async def hot_reload(secret: str = Query(...)):
+    if secret != "cadence-reload-2024":
+        raise HTTPException(status_code=403)
+    
+    global paper_meta, paper_id_list, paper_index, index_ready
+    
+    print("[reload] Hot reload started...")
+    
+    # Only add NEW papers (don't reload existing ones)
+    new_count = 0
+    with open(PAPERS_FILE) as f:
+        for line in f:
+            try:
+                p   = json.loads(line)
+                pid = str(p["paper_id"])
+                if pid not in paper_meta:
+                    paper_meta[pid] = {
+                        "title":           p.get("title") or "",
+                        "abstract":        p.get("abstract") or "",
+                        "authors":         p.get("authors") or [],
+                        "year":            p.get("year"),
+                        "venue":           p.get("venue") or "",
+                        "doi":             p.get("doi"),
+                        "arxiv_id":        p.get("arxiv_id"),
+                        "categories":      p.get("categories") or [],
+                        "source":          p.get("source") or "",
+                        "citation_count":  p.get("citation_count"),
+                        "open_access_url": p.get("open_access_url"),
+                    }
+                    new_count += 1
+            except: pass
+    
+    # Reload paper IDs
+    with open(PAPER_IDS) as f:
+        paper_id_list = json.load(f)
+    
+    # Reload usearch index
+    import gc
+    paper_index = None  # release old index
+    gc.collect()        # force garbage collection
+    # Now load new index
+    from usearch.index import Index
+    paper_index = Index.restore("cadence.usearch")
+    index_ready = True
+    
+    print(f"[reload] Added {new_count:,} new papers, total: {len(paper_meta):,}")
+    return {"status": "ok", "new_papers": new_count, "total": len(paper_meta)}

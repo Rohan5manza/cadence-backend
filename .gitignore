@@ -1,29 +1,45 @@
+# Environment
 .venv/
 __pycache__/
 *.pyc
-*.npy
-*.usearch
-paper_ids.json
-papers_merged.jsonl
-triplets.jsonl
-specter2-finetuned/
-*.egg-info/
 .env
-arxiv_raw/
-openalex_snapshot/
-s2orc_shards/
-pairs_biblio_coupling.jsonl
+
+# Large ML files — not in git
+embeddings.npy
+embeddings_*.npy
+cadence.usearch
+cadence_*.usearch
+paper_ids.json
+paper_ids_*.json
+papers_merged.jsonl
+papers_merged_*.jsonl
+specter2-finetuned/
+
+# Raw ingested paper files
 papers_arxiv.jsonl
-papers_openalex.jsonl
-papers_s2orc.jsonl
-*.log
-nohup.out
-papers_pubmed.jsonl
 papers_biorxiv.jsonl
 papers_doaj.jsonl
+papers_openalex.jsonl
 papers_preprints.jsonl
+papers_pubmed.jsonl
+papers_s2orc.jsonl
+
+# Raw download directories
+arxiv_raw/
+openalex_snapshot/
 pubmed_raw/
+s2orc_shards/
+
+# Training data
+triplets.jsonl
+pairs_biblio_coupling.jsonl
+
+# Checkpoints
 checkpoints/
-embeddings_backup.npy
-cadence_backup.usearch
-paper_ids_backup.json
+
+# Logs
+*.log
+nohup.out
+
+# macOS
+.DS_Store

@@ -314,8 +314,17 @@ def main():
 
     # Restart API to pick up new index
     log("Restarting cadence-api...")
-    os.system("sudo systemctl restart cadence-api")
-    log("Done ✓")
+    import requests
+    try:
+        r = requests.post(
+            "http://localhost:8000/admin/reload",
+            params={"secret": "cadence-reload-2024"},
+            timeout=300  # 5 min timeout for reload
+        )
+        log(f"Hot reload: {r.json()}")
+    except Exception as e:
+        log(f"Hot reload failed: {e}")
+        log("Done ✓")
 
 if __name__ == "__main__":
     main()
