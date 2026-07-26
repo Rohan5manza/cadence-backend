@@ -421,7 +421,7 @@ sudo systemctl start cadence-api
 
 ---
 
-### Step 3: Nightly Ingestion
+### Step 3: Nightly Ingestion (optional)( keeps the corpus fresh and updated by latest releases in academia)
 
 #### `nightly_ingest.py` — Daily Update
 
@@ -453,7 +453,7 @@ tail -f nightly.log
 
 ---
 
-### Step 4: Fine-tuning (optional)
+### Step 4: Fine-tuning (optional: download my fine-tuned model from HF, linked above at the beginning)
 
 #### `build_triplets.py` — Build Training Data
 
