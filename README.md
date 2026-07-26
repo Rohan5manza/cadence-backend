@@ -9,7 +9,7 @@
 Cadence is a personalized research paper discovery platform. This repository contains the full backend: the FastAPI server, the ML pipeline (corpus ingestion, embedding, fine-tuning), and the nightly ingestion cron job.
 
 **Live demo:** [cadence.rohanmarar.com](https://cadence.rohanmarar.com)  
-**Frontend repo:** [github.com/Rohan5manza/cadence-app](https://github.com/Rohan5manza/cadence-app)  
+**Frontend repo:** [github.com/Rohan5manza/cadence-app](https://github.com/Rohan5manza/cadence-frontend)  
 **Embedding model:** [huggingface.co/rohan5manza/cadence-specter2](https://huggingface.co/rohan5manza/cadence-specter2)
 
 ---
