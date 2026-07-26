@@ -121,4 +121,4 @@ Expo's web export (`npx expo export --platform web`) gives a free PWA build from
 
 ## Questions
 
-Open a GitHub issue or email [cadence@rohanmarar.com](mailto:cadence@rohanmarar.com).
+Open a GitHub issue or email [cadence@rohanmarar.com](mailto:rohanmarar5manza@gmail.com).
