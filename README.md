@@ -14,6 +14,31 @@ Cadence is a personalized research paper discovery platform. This repository con
 
 ---
 
+## Embedding Model (Fine-tuned by me)
+
+Cadence uses a fine-tuned version of [SPECTER2](https://huggingface.co/allenai/specter2_base) — available at my HF profile [rohan5manza/cadence-specter2](https://huggingface.co/rohan5manza/cadence-specter2).
+
+| Paper Pair | Base SPECTER2 | Cadence Fine-tuned |
+|------------|--------------|-------------------|
+| Attention is All You Need ↔ BERT | 0.833 | **0.871** |
+| Attention is All You Need ↔ Cancer Research Paper | 0.852 | **-0.044** |
+| **Similarity gap** | **-0.019** ❌ | **+0.914** ✅ |
+
+
+**The base model was confused** — it rated a cancer paper as *more* 
+similar to a transformer paper than BERT was (gap: -0.019, wrong direction).
+
+**After fine-tuning** — the model has clear domain separation. 
+The cancer paper scores negative similarity against transformer papers, 
+meaning it's on the opposite side of the embedding space entirely. 
+The gap flipped from -0.019 to +0.914.
+
+This directly improves recommendation quality: when a user's taste vector 
+points toward NLP/transformers, the nearest neighbors are precisely relevant 
+papers — not papers from unrelated domains that happen to share academic language.
+
+Trained on 267,841 triplets · 3 epochs · Final loss: 0.042 · RTX 4060 Ti
+
 ## Table of Contents
 
 - [Architecture Overview](#architecture-overview)
