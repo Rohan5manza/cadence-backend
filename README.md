@@ -39,6 +39,41 @@ papers — not papers from unrelated domains that happen to share academic langu
 
 Trained on 267,841 triplets · 3 epochs · Final loss: 0.042 · RTX 4060 Ti
 
+
+## Using the Embedding Model
+
+The fine-tuned model is publicly available and can be used independently of Cadence in any scientific NLP workflow.
+
+```python
+from sentence_transformers import SentenceTransformer
+
+model = SentenceTransformer("rohan5manza/cadence-specter2")
+
+embeddings = model.encode(
+    ["Attention Is All You Need [SEP] The dominant sequence transduction models..."],
+    normalize_embeddings=True
+)
+```
+
+**Important:** Use `[SEP]` to separate title from abstract — this matches the training format. Always set `normalize_embeddings=True` for cosine similarity. Output is 768-dimensional float32 vectors.
+
+### Use cases
+
+- Scientific paper recommendation systems
+- Semantic search over research literature
+- Paper clustering by field or topic
+- Finding similar papers given a query
+- Building citation recommendation systems
+
+### When it outperforms base SPECTER2
+
+The fine-tuned model is stronger when you need clear domain separation — CS papers clustering away from biology papers, NLP papers clustering away from clinical medicine. The +0.914 similarity gap between related and unrelated domains (vs -0.019 for base SPECTER2) makes it significantly better for multi-domain corpora.
+
+### When base SPECTER2 may be preferable
+
+For highly specialized single-domain tasks (e.g. purely biomedical), or for citation prediction specifically, the base model may perform comparably. Our fine-tuning optimized for cross-domain separation across a broad multi-field corpus.
+
+
 ## Table of Contents
 
 - [Architecture Overview](#architecture-overview)
