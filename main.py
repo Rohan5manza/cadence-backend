@@ -23,7 +23,7 @@ import httpx
  
 
 # ── Config ─────────────────────────────────────────────────────────────────────
-DB_URL       = "postgresql://platform:sherlock@localhost:5432/cadence"
+DB_URL       = "postgresql://YOUR_CUSTOM_PATH@localhost:5432/cadence"
 SECRET_KEY   = "replace_with_long_random_string_in_production"
 ALGORITHM    = "HS256"
 TOKEN_EXPIRE = 30  # days
