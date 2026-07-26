@@ -32,7 +32,7 @@ cfg = {
     "mixed_prec":   "FP16",
 }
 # ─────────────────────────────────────────────────────────────────────────────
-
+#exclude/ignore this Run(), this is something I ran on my homelab to track metrics using a simple package I built, which I named platform_sdk
 with Run(name="cadence-specter2-finetune", config=cfg, tags=["cadence", "specter2", "nlp"]) as run:
 
     run.enable_gpu_profiler(threshold_pct=80)
